@@ -9,3 +9,5 @@ Alternatively, we can use the SCALED_PRESSURE or SCALED_PRESSURE2 messages to ge
 
 Note that this script has not been tested due to the dependency on receiving data through pymavlink. 
 Please consult chatgpt if issues related to the pymavlink connection occur.
+
+This script does not yet publish the calculated lon/lat points to GPSInput via mavlink 
