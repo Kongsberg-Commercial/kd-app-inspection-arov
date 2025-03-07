@@ -4,13 +4,15 @@ This project contains a series of different multilateration tests.
 We have the raw mathematical simulation for the algorithm in multilateration_algorithm.py. 
 This script uses real transponder coordinates in lat/lon and simulated ROV movement, along with multilateration to show the proof-of-concept for the algorithm
 
-There are four subdirectories in this folder:
+There are a couple subdirectories in this folder:
 - multilateration_no_depth
 - multilateration_static_depth
 - multilateration_with_mavlink
 - serialport_simulation
 
 There is a lot of shared code between these versions, so if one problem arises in one version during testing, the same problem may be present in other versions. 
+
+There is also **operations**, which includes the most up-to-date scripts used directly on the ROV. 
 
 Firstly, the **serialport_simulation** aims to simulate the serial communication with the cPAP for when physical testing isn't possible. This can be useful if logic needs testing without access to the ROV.
 There are two scripts in this directory, one to simulate the onboard ROV logic for communication and position estimation, while the other script is responsible for simulating the ROV's (or rather the cPAP's) movement, while also handling cPAP - cNODE communication 
