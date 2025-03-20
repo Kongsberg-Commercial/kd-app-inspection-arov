@@ -1,4 +1,4 @@
-# This is the main script for the positioning algorithm. This script includes CPAP communication, dynamic sound velocity calculation, sensor-data aquisition through pymavlink, position estimation with multilateration, and publishing of the point estimation to the GPS_INPUT message, allowing for the position to be displayed on the QGroundControl map
+# This is the main script for the positioning algorithm. This script includes CPAP communication, dynamic sound velocity calculation, sensor-data aquisition through pymavlink, position estimation with multilateration, and publishing of the point estimation to the GPS_INPUT message, allowing for the position to be displayed on the QGroundControl map. This version also let's us estimate the position when receiving only 3/4 signals
 import asyncio
 import serial_asyncio
 import random
@@ -10,7 +10,6 @@ from pymavlink import mavutil
 import time
 
 mav = None # Global MAVLink connection used for both sending and receiving
-latest_alt = None 
 # Global variables for dynamic sound velocity (from SCALED_PRESSURE2)
 latest_pressure = None  # in hPa
 latest_temp = None      # in Celsius
@@ -30,16 +29,12 @@ def nmea_checksum(nmea_message):
 
 # MAVLink listener thread: listen for VFR_HUD and SCALED_PRESSURE2 messages.
 def mavlink_listener():
-    global latest_alt, latest_pressure, latest_temp, mav
+    global latest_pressure, latest_temp, mav
     while True:
         msg = mav.recv_match(blocking=True, timeout=1)
         if msg:
             msg_type = msg.get_type()
-            if msg_type == "VFR_HUD":
-                latest_alt = msg.alt
-                # Uncomment to print VFR_HUD messages:
-                # print("VFR_HUD alt:", latest_alt)
-            elif msg_type == "SCALED_PRESSURE2":
+            if msg_type == "SCALED_PRESSURE2":
                 # SCALED_PRESSURE2: press_abs in hPa, temperature in 0.01 °C.
                 latest_pressure = msg.press_abs  
                 latest_temp = msg.temperature / 100.0  
@@ -153,7 +148,7 @@ async def get_multiple_distances(reader, writer, channels, timeout):
     tasks = []
     for channel in channels:
         tasks.append(asyncio.create_task(query_transponder(reader, writer, channel, timeout)))
-        await asyncio.sleep(0.250)  # slight delay between queries
+        await asyncio.sleep(0.50)  # slight delay between queries
     responses = await asyncio.gather(*tasks)
     return responses
 
@@ -220,13 +215,17 @@ def multilaterate(positions, distances, fixed_z):
         ]
     guess_xy = initial_guess_for_xy(positions, distances, fixed_z)
     initial_guess = np.array([guess_xy[0], guess_xy[1]])
-    result = least_squares(residual_func, x0=initial_guess, args=(positions, distances, fixed_z))
+    result = least_squares(residual_func, x0=initial_guess, args=(positions, distances, fixed_z), diff_step=1e-3)
     return np.array([result.x[0], result.x[1], fixed_z])
 
-# Get the latest altitude (depth) reading.
-def read_barometer():
-    global latest_alt
-    return latest_alt if latest_alt is not None else -6
+# Calculate depth (in meters) from pressure in hPa.
+def calculate_depth(pressure_hPa, surface_pressure_hPa=1013.25):
+    # Convert hPa to dbar: 1 dbar = 100 hPa.
+    pressure_dbar = pressure_hPa / 100.0
+    surface_pressure_dbar = surface_pressure_hPa / 100.0
+    depth = pressure_dbar - surface_pressure_dbar
+    depth -= 0.25
+    return -depth  # negative z-coordinate because we are below water
 
 # Sound velocity calculation (using UNESCO 1983 algorithm)
 # Python implementation from https://github.com/bjornaa/seawater/blob/master/seawater/misc.py
@@ -247,9 +246,9 @@ def soundvel(S, T, P=0):
     a20 = -3.9064e-7; a21 =  9.1041e-9; a22 = -1.6002e-10; a23 =  7.988e-12
     a30 =  1.100e-10; a31 =  6.649e-12; a32 = -3.389e-13
     A = (a00 + (a01 + (a02 + (a03 + a04 * T) * T) * T) * T +
-         (a10 + (a11 + (a12 + (a13 + a14 * T) * T) * T) * T) * P +
+         (a10 + (a11 + (a12 + (a13 + a14 * T) * T) * T) * P +
          (a20 + (a21 + (a22 + a23 * T) * T) * T) * P2 +
-         (a30 + (a31 + a32 * T) * T) * P3)
+         (a30 + (a31 + a32 * T) * T) * P3))
     b00 = -1.922e-2; b01 = -4.42e-5; b10 =  7.3637e-5; b11 =  1.7945e-7
     B = b00 + b01 * T + (b10 + b11 * T) * P
     d00 =  1.727e-3; d10 = -7.9836e-6
@@ -260,7 +259,7 @@ def soundvel(S, T, P=0):
 async def main():
     global mav
     global_timeout = 2.0   # timeout for queries
-    polling_delay = 0.250  # delay between query cycles
+    polling_delay = 0.50   # delay between query cycles
 
     # Open serial port
     try:
@@ -273,36 +272,49 @@ async def main():
     asyncio.create_task(background_reader(reader))
 
     # Define transponder channels and their lat/lon positions (in decimal degrees).
-    channels = ["M20", "M22", "M29", "M30"]
+    channels = ["M22", "M16", "M29", "M20"]
     transponder_latlon = [
         (59.428465173, 10.465137681),  # t1 (origin)
-        (59.428445150, 10.465241581),  # t2
+        (59.429155409, 10.464601094),  # far
         (59.428427280, 10.465334121),  # t3
-        (59.428407132, 10.465439580),  # t4
+        (59.428463528, 10.464801958)    # hjørnet av målestasjonen
+        #(59.428445150, 10.465241581)   # old t2, new t4
+        #(59.428407132, 10.465439580),  # t4
     ]
-    origin_lat, origin_lon = transponder_latlon[0]  # Use first transponder as the origin
+    origin_lat, origin_lon = transponder_latlon[1]  # Use first transponder as the origin
 
     # Convert transponder positions from lat/lon to meters.
-    transponder_depth_const = -1 # Static depth of placed transponders
+    transponder_depth_const = -1.5  # Static depth of placed transponders
     transponder_positions = []
     for i, (lat_val, lon_val) in enumerate(transponder_latlon):
         x, y = latlon_to_meters(lat_val, lon_val, origin_lat, origin_lon)
-        # Because all transponders are in a straight line physically, we must add a tiny offset to one transponder
-        # This ensures the problem does not collapse into 2D, and instead we work in a 3D framework for multilateration 
-        if i == 1:
-            x += 0.1
-            y += 0.1
-        transponder_positions.append([x, y, transponder_depth_const])
+        # To avoid degenerate geometry, add a small offset for one transponder if needed.
+        depth_to_use = transponder_depth_const
+        if i == 2:  # example: change depth for third transponder
+            depth_to_use = -5.0
+        transponder_positions.append([x, y, depth_to_use])
     transponder_positions = np.array(transponder_positions)
 
+    # Example of adjusting a transponder's lat/lon if needed.
+    offset = 1.0  # offset in meters
+    theta = np.deg2rad(18)
+    dx = offset * np.sin(theta)
+    dy = offset * np.cos(theta)
+    R = 6371000
+    dlat = (dy / R) * (180 / np.pi)
+    dlon = (dx / (R * np.cos(np.deg2rad(origin_lat)))) * (180 / np.pi)
+    lat_t2, lon_t2 = transponder_latlon[1]
+    transponder_latlon[1] = (lat_t2 + dlat, lon_t2 + dlon)
+    print("Adjusted transponder positions if needed.")
+
     # Define GPS_INPUT ignore flags. We want to publish lat/lon, and avoid overriding the altitude
-    GPS_INPUT_IGNORE_FLAG_ALT = 7  # Using 7 here because indexing starts at 0. Altitude is the 8th argument
+    GPS_INPUT_IGNORE_FLAG_ALT = 7  # Altitude is the 8th argument (index 7)
     ignore_flags = (mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_VEL_HORIZ |
                     mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_VEL_VERT |
-                    mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_SPEED_ACCURACY |
-                    GPS_INPUT_IGNORE_FLAG_ALT)
+                    mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_SPEED_ACCURACY)
 
     print("Receiver started. Polling transponders and performing multilateration...")
+
     battery = await read_battery_level(reader, writer)
     print("Battery reply:", battery)
 
@@ -313,38 +325,70 @@ async def main():
     print("Power reply:", power)
     print("-" * 70)
 
+    # Create a list to store the previous valid reading for each channel.
+    prev_distances = [None] * len(channels)
+    required_total = len(channels)   # e.g., 4 channels
+    min_new_required = 3  # require at least 3 new valid readings
+    prev_x = 0
+    prev_y = 0
     # Main loop
     while True:
-        # Query each transponder channel.
         responses = await get_multiple_distances(reader, writer, channels, timeout=global_timeout)
 
-        # Compute dynamic sound velocity using SCALED_PRESSURE2 data.
+        # Compute dynamic sound velocity and depth from pressure.
         if latest_pressure is not None and latest_temp is not None:
             P_dbar = latest_pressure / 100.0  # Convert hPa to dbar
             dynamic_speed = soundvel(32, latest_temp, P_dbar)
+            fixed_z = calculate_depth(latest_pressure)
         else:
             dynamic_speed = 1500  # Fallback value
+            fixed_z = 0
 
         distances = []
-        for ch, resp in zip(channels, responses):
-            if resp:
-                d = parse_distance(resp, dynamic_speed)
-                distances.append(d)
-                print(f"Channel {ch} distance: {d} m")
-            else:
-                distances.append(None)
-                print(f"Channel {ch} no response.")
+        new_valid_flags = []  # True if this channel provided a new valid reading
 
-        # We only perform multilateration if we have all four distances. This can be changed in the future.
-        if None not in distances:
-            distances = np.array(distances)
-            fixed_z = read_barometer()
-            est = multilaterate(transponder_positions, distances, fixed_z)
+        for i, (ch, resp) in enumerate(zip(channels, responses)):
+            new_reading = None
+            if resp:
+                new_reading = parse_distance(resp, dynamic_speed)
+            # Check if the new reading is valid (i.e. not None and not 0.0)
+            if new_reading is not None and new_reading != 0.0:
+                d = new_reading
+                is_new = True
+                print(f"Channel {ch} new reading: {d} m")
+            else:
+                # Fallback: use the previous valid reading if available.
+                if prev_distances[i] is not None:
+                    d = prev_distances[i]
+                    is_new = False
+                    print(f"Channel {ch} invalid new reading. Using previous valid reading: {d} m")
+                else:
+                    d = None
+                    is_new = False
+                    print(f"Channel {ch} invalid new reading and no previous reading available.")
+            distances.append(d)
+            new_valid_flags.append(is_new if d is not None else False)
+            # Update stored reading only if we got a fresh valid measurement.
+            if is_new and d is not None:
+                prev_distances[i] = d
+
+        new_valid_count = sum(1 for flag in new_valid_flags if flag)
+        print(f"New valid readings: {new_valid_count} / {required_total} (required: {min_new_required})")
+
+        # Only proceed if all channels have some reading (even fallback) and at least the minimum number are new.
+        if all(d is not None and d != 0.0 for d in distances) and new_valid_count >= min_new_required:
+            # Perform multilateration using all channels (some may be fallback values)
+            est = multilaterate(transponder_positions, np.array(distances), fixed_z)
             est_lat, est_lon = meters_to_latlon(est[0], est[1], origin_lat, origin_lon)
+            offset = np.sqrt((prev_x-est[0])**2 + (prev_y-est[1])**2)
             print("\n[Multilateration Result]")
             print("Estimated position (meters):", est)
             print("Estimated position (lat, lon, z):", est_lat, est_lon, est[2])
+            print(f"Calculated offset: {offset}")
             print("-" * 95)
+
+            prev_x = est[0]
+            prev_y = est[1]
 
             # Publish the calculated GPS coordinates using GPS_INPUT.
             mav.mav.gps_input_send(
@@ -362,16 +406,17 @@ async def main():
                 0.0,                     # Velocity North
                 0.0,                     # Velocity East
                 0.0,                     # Velocity Down
-                0.0,                     # Speed accuracy
-                0.0,                     # Horizontal accuracy
-                0.0,                     # Vertical accuracy
-                7                        # Number of satellites
+                100.0,                     # Speed accuracy (1.0 works ok, 5 is better)
+                0.6,                     # Horizontal accuracy
+                0.1,                     # Vertical accuracy
+                17                       # Number of satellites
             )
             print("Published GPS_INPUT message (lat/lon only).")
         else:
-            print("Incomplete distance measurements. Skipping multilateration cycle.\n")
+            print("Not enough new valid readings. Skipping multilateration cycle.\n")
 
         await asyncio.sleep(polling_delay)
+
 
 if __name__ == "__main__":
     # Initialize global MAVLink connection.
