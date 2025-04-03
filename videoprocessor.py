@@ -1,4 +1,4 @@
-# This is the main image processing script. It fetches frames from the video feed using gstreamer and passes it to OpenCV2. We then extract the white-ish pixels corresponding to the pipe, use canny and probabilistic hough line transform. We then merge the hough lines and create a "skeleton" of the pipe. We find phi_e and y_e and send it to the servers.
+# This is the main image processing script. It fetches frames from the video feed using gstreamer and passes it to OpenCV2. We then extract the white-ish pixels corresponding to the pipe, find the "centerline" or "skeleton" of the pipe, and run probabilistic hough line transform. We find phi_e and y_e and send it to the servers.
 # To run this script, the environment at ~/python/testing/mavlink_testing/env has to be sourced, or the binary ~/python/testing/mavlink_testing/env/bin/python3 has to be used. For example:
 # ~/python/testing/mavlink_testing/env/bin/python3 videoprocessor.py
 import sys
