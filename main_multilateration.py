@@ -1,4 +1,4 @@
-# This is the main script for the positioning algorithm. This script includes CPAP communication, dynamic sound velocity calculation, sensor-data aquisition through pymavlink, position estimation with multilateration, and publishing of the point estimation to the GPS_INPUT message, allowing for the position to be displayed on the QGroundControl map. This version also let's us estimate the position when receiving only 3/4 signals
+# This is the main script for the positioning algorithm. This script includes CPAP communication, dynamic sound velocity calculation, sensor-data aquisition through pymavlink, position estimation with multilateration, and publishing of the point estimation to the GPS_INPUT message, allowing for the position to be displayed on the QGroundControl map
 import asyncio
 import serial_asyncio
 import random
@@ -277,7 +277,8 @@ async def main():
         (59.428465173, 10.465137681),  # t1 (origin)
         (59.429155409, 10.464601094),  # far
         (59.428427280, 10.465334121),  # t3
-        (59.428463528, 10.464801958)    # hjørnet av målestasjonen
+        #(59.428463528, 10.464801958)    # hjørnet av målestasjonen
+        (59.428464167, 10.464801112)    #nytt hjørnet av målestasjon
         #(59.428445150, 10.465241581)   # old t2, new t4
         #(59.428407132, 10.465439580),  # t4
     ]
@@ -290,7 +291,7 @@ async def main():
         x, y = latlon_to_meters(lat_val, lon_val, origin_lat, origin_lon)
         # To avoid degenerate geometry, add a small offset for one transponder if needed.
         depth_to_use = transponder_depth_const
-        if i == 2:  # example: change depth for third transponder
+        if i == 0:  # example: change depth for third transponder
             depth_to_use = -5.0
         transponder_positions.append([x, y, depth_to_use])
     transponder_positions = np.array(transponder_positions)
