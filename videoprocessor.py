@@ -1,6 +1,8 @@
 # This is the main image processing script. It fetches frames from the video feed using gstreamer and passes it to OpenCV2. We then extract the white-ish pixels corresponding to the pipe, find the "centerline" or "skeleton" of the pipe, and run probabilistic hough line transform. We find phi_e and y_e and send it to the servers.
+# We also draw detections on the images, compress to jpg and send it to the topside computer on its own port (8889)
 # To run this script, the environment at ~/python/testing/mavlink_testing/env has to be sourced, or the binary ~/python/testing/mavlink_testing/env/bin/python3 has to be used. For example:
 # ~/python/testing/mavlink_testing/env/bin/python3 videoprocessor.py
+# Also make sure to adjust the socket connections based on what is actually listening!
 import sys
 import math
 import cv2 as cv
@@ -8,6 +10,7 @@ import numpy as np
 import time
 import gi
 import socket
+import struct
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
@@ -279,14 +282,17 @@ def main(argv):
     LOCALIP = "127.0.0.1"
     REMOTEIP = "192.168.2.1"
     PORT = 8888
-    sock_local = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock_remote = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    VIDEOPORT = 8889
+    sock_local = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock_remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock_video = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     # Connect to the socket, retrying until successful
     while True:
         try:
-            sock_local.connect((LOCALIP, PORT))
-            #sock_remote.connect((LOCALIP, PORT)) # will be used for digital twin
+            #sock_local.connect((LOCALIP, PORT))
+            #sock_remote.connect((REMOTEIP, PORT)) # will be used for digital twin
+            sock_video.connect((REMOTEIP, VIDEOPORT)) # used for sending the processed vidoestream to topside. Seperate port so we dont conflict with the phi_e and y_e data.
             break  # Exit the loop when connection is successful
         except ConnectionRefusedError:
             print("Connection refused, retrying in 1 second...")
@@ -347,6 +353,29 @@ def main(argv):
             except Exception as e:
                 print(f"Error sending message: {e}")
 
+            # DRAW OUR DETECTIONS ON IMAGE
+            out_img = image.copy()
+            img_center_x = int(image.shape[1] / 2)  # Draw the vertical center line.
+            cv.line(out_img, (img_center_x, 0), (img_center_x, image.shape[0]), (255, 0, 0), 2, cv.LINE_AA)
+            # For each final line, draw it and compute parameters.
+            for idx, (pt1, pt2) in enumerate(final_lines):
+                cv.line(out_img, pt1, pt2, (0, 255, 0), 3, cv.LINE_AA)
+                bottom_pt = pt1 if pt1[1] > pt2[1] else pt2
+                y_e = bottom_pt[0] - img_center_x
+                cv.circle(out_img, bottom_pt, 5, (255, 0, 0), -1)
+                center_dot = (img_center_x, bottom_pt[1])
+                cv.circle(out_img, center_dot, 5, (255, 0, 0), -1)
+                cv.line(out_img, bottom_pt, center_dot, (255, 0, 0), 2, cv.LINE_AA)
+
+            # Encode the image to a jpg and 
+            retval, buffer = cv.imencode('.jpg', out_img)
+            data = buffer.tobytes()
+            header = struct.pack('>I', len(data)) # send the length of the image data
+            try:
+                sock_video.sendall(header + data)
+            except Exception as e:
+                print(f"Error sending image: {e}")
+        
             print(f"Processing time: {time.time() - start_time} seconds") # diagnositcs print to see how often we can process frames.
         except Exception as e:
             print(f"Error processing frame: {e}")
