@@ -268,7 +268,7 @@ def compute_phi_e(p1, p2):
     Compute the deviation phi_e (in radians) of the line (p1,p2)
     from vertical. Specifically, phi_e = phi_pipe - (pi/2) normalized to [-pi/2, pi/2].
     """
-    phi_pipe = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+    phi_pipe = math.atan2(p2[0] - p1[0], p2[1] - p1[1])
     phi_e = phi_pipe - (math.pi / 2)
     while phi_e < -math.pi/2:
         phi_e += math.pi
@@ -290,7 +290,7 @@ def main(argv):
     # Connect to the socket, retrying until successful
     while True:
         try:
-            #sock_local.connect((LOCALIP, PORT))
+            sock_local.connect((LOCALIP, PORT))
             #sock_remote.connect((REMOTEIP, PORT)) # will be used for digital twin
             sock_video.connect((REMOTEIP, VIDEOPORT)) # used for sending the processed vidoestream to topside. Seperate port so we dont conflict with the phi_e and y_e data.
             break  # Exit the loop when connection is successful
