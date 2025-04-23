@@ -1,355 +1,435 @@
-# This is the main image processing script. It fetches frames from the video feed using gstreamer and passes it to OpenCV2. We then extract the white-ish pixels corresponding to the pipe, find the "centerline" or "skeleton" of the pipe, and run probabilistic hough line transform. We find phi_e and y_e and send it to the servers.
-# To run this script, the environment at ~/python/testing/mavlink_testing/env has to be sourced, or the binary ~/python/testing/mavlink_testing/env/bin/python3 has to be used. For example:
-# ~/python/testing/mavlink_testing/env/bin/python3 videoprocessor.py
-import sys
-import math
-import cv2 as cv
+# This is the main script for the positioning algorithm. This script includes CPAP communication, dynamic sound velocity calculation, sensor-data aquisition through pymavlink, position estimation with multilateration, and publishing of the point estimation to the GPS_INPUT message, allowing for the position to be displayed on the QGroundControl map
+import asyncio
+import serial_asyncio
+import random
 import numpy as np
+from numpy.linalg import norm
+from scipy.optimize import least_squares
+import threading
+from pymavlink import mavutil
 import time
-import gi
-import socket
 
-gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+mav = None # Global MAVLink connection used for both sending and receiving
+# Global variables for dynamic sound velocity (from SCALED_PRESSURE2)
+latest_pressure = None  # in hPa
+latest_temp = None      # in Celsius
 
-# boilerplate from https://www.ardusub.com/developers/opencv.html
-class Video():
-    """BlueRov video capture class constructor
+# Helper function to calculate the NMEA checksums
+def nmea_checksum(nmea_message):
+    nmea_message = nmea_message.strip()
+    assert nmea_message.startswith('$'), "[x] NMEA message must start with '$'"
+    nmea_message = nmea_message[1:]
+    data_list = nmea_message.split('*')
+    assert len(data_list) == 2, "[x] FormatError, NMEA message must contain exactly one '*'"
+    data = data_list[0]
+    checksum = 0
+    for char in data:
+        checksum ^= ord(char)
+    return f"{checksum:02X}"
 
-    Attributes:
-        port (int): Video UDP port
-        video_codec (string): Source h264 parser
-        video_decode (string): Transform YUV (12bits) to BGR (24bits)
-        video_pipe (object): GStreamer top-level pipeline
-        video_sink (object): Gstreamer sink element
-        video_sink_conf (string): Sink configuration
-        video_source (string): Udp source ip and port
-        latest_frame (np.ndarray): Latest retrieved video frame
-    """
+# MAVLink listener thread: listen for VFR_HUD and SCALED_PRESSURE2 messages.
+def mavlink_listener():
+    global latest_pressure, latest_temp, mav
+    while True:
+        msg = mav.recv_match(blocking=True, timeout=1)
+        if msg:
+            msg_type = msg.get_type()
+            if msg_type == "SCALED_PRESSURE2":
+                # SCALED_PRESSURE2: press_abs in hPa, temperature in 0.01 °C.
+                latest_pressure = msg.press_abs  
+                latest_temp = msg.temperature / 100.0  
+                #print(f"Received SCALED_PRESSURE2: Pressure = {latest_pressure:.1f} hPa, Temp = {latest_temp:.2f} °C")
 
-    def __init__(self, port=5601):
-        """Summary
+pending_responses = {}  # Global dictionary for pending responses
 
-        Args:
-            port (int, optional): UDP port
-        """
-
-        Gst.init(None)
-
-        self.port = port
-        self.latest_frame = self._new_frame = None
-
-        # [Software component diagram](https://www.ardusub.com/software/components.html)
-        # UDP video stream (:5600)
-        self.video_source = 'udpsrc port={}'.format(self.port)
-        # [Rasp raw image](http://picamera.readthedocs.io/en/release-0.7/recipes2.html#raw-image-capture-yuv-format)
-        # Cam -> CSI-2 -> H264 Raw (YUV 4-4-4 (12bits) I420)
-        self.video_codec = '! application/x-rtp, payload=96 ! rtph264depay ! h264parse ! avdec_h264'
-        # Python don't have nibble, convert YUV nibbles (4-4-4) to OpenCV standard BGR bytes (8-8-8)
-        self.video_decode = \
-            '! decodebin ! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert'
-        # Create a sink to get data
-        self.video_sink_conf = \
-            '! appsink emit-signals=true sync=false max-buffers=2 drop=true'
-
-        self.video_pipe = None
-        self.video_sink = None
-
-        self.run()
-
-    def start_gst(self, config=None):
-        """ Start gstreamer pipeline and sink
-        Pipeline description list e.g:
-            [
-                'videotestsrc ! decodebin', \
-                '! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert',
-                '! appsink'
-            ]
-
-        Args:
-            config (list, optional): Gstreamer pileline description list
-        """
-
-        if not config:
-            config = \
-                [
-                    'videotestsrc ! decodebin',
-                    '! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert',
-                    '! appsink'
-                ]
-
-        command = ' '.join(config)
-        self.video_pipe = Gst.parse_launch(command)
-        self.video_pipe.set_state(Gst.State.PLAYING)
-        self.video_sink = self.video_pipe.get_by_name('appsink0')
-
-    @staticmethod
-    def gst_to_opencv(sample):
-        """Transform byte array into np array
-
-        Args:
-            sample (TYPE): Description
-
-        Returns:
-            TYPE: Description
-        """
-        buf = sample.get_buffer()
-        caps_structure = sample.get_caps().get_structure(0)
-        array = np.ndarray(
-            (
-                caps_structure.get_value('height'),
-                caps_structure.get_value('width'),
-                3
-            ),
-            buffer=buf.extract_dup(0, buf.get_size()), dtype=np.uint8)
-        return array
-
-    def frame(self):
-        """ Get Frame
-
-        Returns:
-            np.ndarray: latest retrieved image frame
-        """
-        if self.frame_available:
-            self.latest_frame = self._new_frame
-            # reset to indicate latest frame has been 'consumed'
-            self._new_frame = None
-        return self.latest_frame
-
-    def frame_available(self):
-        """Check if a new frame is available
-
-        Returns:
-            bool: true if a new frame is available
-        """
-        return self._new_frame is not None
-
-    def run(self):
-        """ Get frame to update _new_frame
-        """
-
-        self.start_gst(
-            [
-                self.video_source,
-                self.video_codec,
-                self.video_decode,
-                self.video_sink_conf
-            ])
-
-        self.video_sink.connect('new-sample', self.callback)
-
-    def callback(self, sink):
-        sample = sink.emit('pull-sample')
-        self._new_frame = self.gst_to_opencv(sample)
-
-        return Gst.FlowReturn.OK
-
-
-# Isolate white-ish RGB values, should correspond to the pipe
-def isolate_pipe(image):
-    """
-    Isolate white-ish regions (the pipe) in the input image.
-    Returns the isolated image and the binary mask.
-    """
-    # Convert to HSV and define a white-ish range.
-    hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
-    lower_white = np.array([0, 0, 200])
-    upper_white = np.array([255, 255, 255])
-    mask = cv.inRange(hsv, lower_white, upper_white)
-
-    # Morphological operations: close gaps then remove noise.
-    kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5))
-    mask_closed = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel)
-    mask_clean = cv.morphologyEx(mask_closed, cv.MORPH_OPEN, kernel)
-
-    # Apply the mask to the original image.
-    isolated = cv.bitwise_and(image, image, mask=mask_clean)
-    return isolated, mask_clean
-
-def extract_centerline(binary, min_dist=5):
-    """
-    Given a binary image (foreground=255, background=0) of the isolated pipe,
-    compute its distance transform, extract the local maxima (medial axis), and
-    dilate the thin centerline to a thicker version.
-    Returns a binary image representing the thick centerline.
-    """
-    # Compute distance transform.
-    dist = cv.distanceTransform(binary, cv.DIST_L2, 5)
-    # Dilate the distance transform.
-    kernel = np.ones((3, 3), np.uint8)
-    dilated = cv.dilate(dist, kernel)
-    # Find local maxima: pixels equal to the dilated value.
-    local_max = (dist == dilated)
-    # Keep only pixels above a minimum distance threshold.
-    local_max = np.logical_and(local_max, dist >= min_dist)
-    thin_centerline = np.uint8(local_max * 255)
-    # Dilate the thin centerline to get a thicker centerline.
-    thick_kernel = cv.getStructuringElement(cv.MORPH_RECT, (7, 7))
-    thick_centerline = cv.dilate(thin_centerline, thick_kernel, iterations=1)
-    return thick_centerline
-
-def compute_line_angle(line):
-    """
-    Compute the normalized angle (in radians, in [0,pi)) of a line segment.
-    The input line is ((x1,y1),(x2,y2)).
-    """
-    (x1, y1), (x2, y2) = line
-    phi = math.atan2(y2 - y1, x2 - x1) % math.pi
-    return phi
-
-def cluster_lines_by_angle(lines, angle_thresh=0.3):
-    """
-    Given a list of line segments (each as ((x1,y1),(x2,y2))),
-    cluster them by their angle. Two lines are placed in the same cluster
-    if their angle difference is less than angle_thresh (in radians).
-    Returns a list of clusters (each a list of line segments).
-    """
-    if not lines:
-        return []
-    lines = sorted(lines, key=lambda l: compute_line_angle(l))
-    clusters = []
-    current_cluster = [lines[0]]
-    current_angle = compute_line_angle(lines[0])
-    for line in lines[1:]:
-        angle = compute_line_angle(line)
-        diff = min(abs(angle - current_angle), math.pi - abs(angle - current_angle))
-        if diff < angle_thresh:
-            current_cluster.append(line)
-            current_angle = (current_angle * (len(current_cluster)-1) + angle) / len(current_cluster)
-        else:
-            clusters.append(current_cluster)
-            current_cluster = [line]
-            current_angle = angle
-    if current_cluster:
-        clusters.append(current_cluster)
-    return clusters
-
-def merge_cluster(cluster):
-    """
-    Merge a cluster of line segments (each as ((x1,y1),(x2,y2)))
-    into a single representative line by projecting all endpoints along
-    the average line direction and taking the extremes.
-    Returns the merged line as ((x_min, y_min), (x_max, y_max)).
-    """
-    if not cluster:
-        return None
-    # Collect all endpoints.
-    points = []
-    for (p1, p2) in cluster:
-        points.append(p1)
-        points.append(p2)
-    points = np.array(points, dtype=np.float32)
-    # Compute the average angle of the cluster.
-    sin_sum = 0.0
-    cos_sum = 0.0
-    for (p1, p2) in cluster:
-        phi = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        sin_sum += math.sin(phi)
-        cos_sum += math.cos(phi)
-    avg_phi = math.atan2(sin_sum, cos_sum)
-    direction = np.array([math.cos(avg_phi), math.sin(avg_phi)])
-    # Project each point on the direction.
-    projections = [np.dot(pt, direction) for pt in points]
-    min_proj = min(projections)
-    max_proj = max(projections)
-    center = np.mean(points, axis=0)
-    # Compute extreme endpoints relative to the center.
-    pt_min = (int(center[0] + (min_proj - np.dot(center, direction)) * direction[0]),
-              int(center[1] + (min_proj - np.dot(center, direction)) * direction[1]))
-    pt_max = (int(center[0] + (max_proj - np.dot(center, direction)) * direction[0]),
-              int(center[1] + (max_proj - np.dot(center, direction)) * direction[1]))
-    return (pt_min, pt_max)
-
-def compute_phi_e(p1, p2):
-    """
-    Compute the deviation phi_e (in radians) of the line (p1,p2)
-    from vertical. Specifically, phi_e = phi_pipe - (pi/2) normalized to [-pi/2, pi/2].
-    """
-    phi_pipe = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-    phi_e = phi_pipe - (math.pi / 2)
-    while phi_e < -math.pi/2:
-        phi_e += math.pi
-    while phi_e > math.pi/2:
-        phi_e -= math.pi
-    return phi_e
-
-def main(argv):
-    video = Video(port=5601)
-
-    LOCALIP = "127.0.0.1"
-    REMOTEIP = "192.168.2.1"
-    PORT = 8888
-    sock_local = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #sock_remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    # Connect to the socket, retrying until successful
+# Background reader task: continuously dispatch incoming replies from serial port
+async def background_reader(reader):
     while True:
         try:
-            sock_local.connect((LOCALIP, PORT))
-            #sock_remote.connect((REMOTEIP, PORT)) # will be used for digital twin
-            break  # Exit the loop when connection is successful
-        except ConnectionRefusedError:
-            print("Connection refused, retrying in 1 second...")
-            time.sleep(1)
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            time.sleep(1)
-
-    print("Established a connection with server(s).")
-
-    while True:
-        if not video.frame_available():
-            continue
-        
-        try:
-            image = video.frame()
-
-            start_time = time.time()
-            isolated, _ = isolate_pipe(image)
-            gray = cv.cvtColor(isolated, cv.COLOR_BGR2GRAY)
-            _, binary = cv.threshold(gray, 127, 255, cv.THRESH_BINARY)
-
-            # Extract a centerline ("skeleton") from the binary image.
-            centerline = extract_centerline(binary, min_dist=3)
-
-            # Run the Probabilistic Hough Transform on the centerline.
-            linesP = cv.HoughLinesP(centerline, 1, np.pi/180, threshold=10, minLineLength=30, maxLineGap=10)
-            hough_lines = []
-            if linesP is not None:
-                for i in range(len(linesP)):
-                    l = linesP[i][0]
-                    hough_lines.append(((l[0], l[1]), (l[2], l[3])))
-            else:
-                print("No Hough segments detected on the centerline.")
+            line = await reader.readline()
+            if not line:
                 continue
+            response = line.decode('utf-8').strip()
+            key = None
+            if response.startswith("$PSIMCUP,TPR,"):
+                parts = response.split(',')
+                if len(parts) >= 3:
+                    key = parts[2]
+            elif response.startswith("$PSIMCUP,BAT,") or response.startswith("$PSIMCUP,BAA,"):
+                key = "BAT"
+            elif response.startswith("$PSIMCUP,VER,") or response.startswith("$PSIMCUP,VEA,"):
+                key = "VER"
+            elif response.startswith("$PSIMCUP,PWR,") or response.startswith("$PSIMCUP,PWA,"):
+                key = "PWR"
+            else:
+                print("[Background Reader] Unrecognized response format")
 
-            # Cluster the segments by angle.
-            clusters = cluster_lines_by_angle(hough_lines, angle_thresh=0.3)
-            final_lines = []
-            for cluster in clusters:
-                merged = merge_cluster(cluster)
-                if merged is not None:
-                    final_lines.append(merged)
-
-            img_center_x = int(image.shape[1] / 2)
-
-            # Get the bottom line, find y_e and phi_e 
-            pt1, pt2 = max(final_lines, key=lambda line: max(line[0][1], line[1][1])) if final_lines else None
-            phi_e = compute_phi_e(pt1, pt2)
-            phi_e_deg = math.degrees(phi_e)
-            bottom_pt = pt1 if pt1[1] > pt2[1] else pt2
-            y_e = bottom_pt[0] - img_center_x
-            data_str = f"{y_e};{phi_e_deg}\n" #idk why newline men de var i testscriptet til robin
-
-            try:
-                sock_local.sendall(data_str.encode('utf-8'))
-                #sock_remote.sendall(data_str.encode('utf-8')) # will be used for digital twin. Commenting out for now because there is no server yet
-            except Exception as e:
-                print(f"Error sending message: {e}")
-
-            print(f"Processing time: {time.time() - start_time} seconds") # diagnositcs print to see how often we can process frames.
+            if key and key in pending_responses:
+                future = pending_responses.pop(key)
+                if not future.done():
+                    future.set_result(response)
         except Exception as e:
-            print(f"Error processing frame: {e}")
+            print("[Background Reader] Error:", e)
+
+# Helper function to construct NMEA message to interrogate cNODEs (for distance)
+async def query_transponder(reader, writer, channel, timeout=5):
+    message = f"$PSIMCUP,TPI,{channel},{float(timeout)}*"
+    message += nmea_checksum(f"$PSIMCUP,TPI,{channel},{float(timeout)}*")
+    message += "\r\n"
+    writer.write(message.encode('utf-8'))
+    await writer.drain()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_responses[channel] = future
+    try:
+        response = await asyncio.wait_for(future, timeout=timeout)
+        return response
+    except asyncio.TimeoutError:
+        pending_responses.pop(channel, None)
+        return None
+
+# Helper function to construct NMEA message to read battery level for cPAP
+async def read_battery_level(reader, writer, timeout=5):
+    print(f"{'-'*70}\n[+] Read Battery Level")
+    message = "$PSIMCUP,BAT*" + nmea_checksum("$PSIMCUP,BAT*") + "\r\n"
+    print(f"User -> cPAP command: {message.strip()}")
+    writer.write(message.encode('utf-8'))
+    await writer.drain()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_responses["BAT"] = future
+    try:
+        response = await asyncio.wait_for(future, timeout=timeout)
+        return response
+    except asyncio.TimeoutError:
+        print("Timeout waiting for battery response")
+        pending_responses.pop("BAT", None)
+        return None
+
+# Helper function to construct NMEA message to read version info for cPAP
+async def read_version_info(reader, writer, timeout=5):
+    print(f"{'-'*70}\n[+] Read Version Info")
+    message = "$PSIMCUP,VER*" + nmea_checksum("$PSIMCUP,VER*") + "\r\n"
+    print(f"User -> cPAP command: {message.strip()}")
+    writer.write(message.encode('utf-8'))
+    await writer.drain()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_responses["VER"] = future
+    try:
+        response = await asyncio.wait_for(future, timeout=timeout)
+        return response
+    except asyncio.TimeoutError:
+        print("Timeout waiting for version info")
+        pending_responses.pop("VER", None)
+        return None
+
+# Helper function to construct NMEA message to set the transmit power level
+async def set_transmit_power(reader, writer, level, timeout=5):
+    print(f"{'-'*70}\n[+] Set Transmit Power to level {level}")
+    assert level in [1, 2, 3, 4], "[x] FormatError, Transmit Power Level must be in [1,2,3,4]"
+    message = f"$PSIMCUP,PWR,{level}*" + nmea_checksum(f"$PSIMCUP,PWR,{level}*") + "\r\n"
+    print(f"User -> cPAP command: {message.strip()}")
+    writer.write(message.encode('utf-8'))
+    await writer.drain()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_responses["PWR"] = future
+    try:
+        response = await asyncio.wait_for(future, timeout=timeout)
+        return response
+    except asyncio.TimeoutError:
+        print("Timeout waiting for power command response")
+        pending_responses.pop("PWR", None)
+        return None
+
+# Function to get distances from a list of channels
+async def get_multiple_distances(reader, writer, channels, timeout):
+    tasks = []
+    for channel in channels:
+        tasks.append(asyncio.create_task(query_transponder(reader, writer, channel, timeout)))
+        await asyncio.sleep(0.50)  # slight delay between queries
+    responses = await asyncio.gather(*tasks)
+    return responses
+
+# Helper function to calculate the distance from t_time from the received message
+def parse_distance(response, speed=1500):
+    try:
+        parts = response.split(',')
+        if len(parts) < 5:
+            return None
+        t_time = float(parts[4])
+        distance = round(t_time * speed, 3)
+        return distance
+    except Exception as e:
+        print("Error parsing distance:", e)
+        return None
+
+# Helper function to convert from latlon coordinates to meters (relative to origin)
+def latlon_to_meters(lat, lon, origin_lat, origin_lon):
+    R = 6371000  # Earth's radius in meters
+    dlat = np.deg2rad(lat - origin_lat)
+    dlon = np.deg2rad(lon - origin_lon)
+    x = R * dlon * np.cos(np.deg2rad(origin_lat))
+    y = R * dlat
+    return x, y
+
+# Helper function to convert from meters back to latlon coordinates (relative to origin)
+def meters_to_latlon(x, y, origin_lat, origin_lon):
+    R = 6371000
+    dlat = y / R
+    dlon = x / (R * np.cos(np.deg2rad(origin_lat)))
+    lat = origin_lat + np.rad2deg(dlat)
+    lon = origin_lon + np.rad2deg(dlon)
+    return lat, lon
+
+# Get an initial estimate for position using linear least squares.
+def initial_guess_for_xy(positions, distances, fixed_z):
+    N = len(positions)
+    r = []
+    for pos, d in zip(positions, distances):
+        vertical_offset = fixed_z - pos[2]
+        horizontal = np.sqrt(np.abs(d**2 - vertical_offset**2))
+        r.append(horizontal)
+    r = np.array(r)
+    x1, y1 = positions[0, 0], positions[0, 1]
+    r1 = r[0]
+    A = []
+    b = []
+    for i in range(1, N):
+        xi, yi = positions[i, 0], positions[i, 1]
+        ri = r[i]
+        A.append([2 * (xi - x1), 2 * (yi - y1)])
+        b.append(xi**2 - x1**2 + yi**2 - y1**2 + r1**2 - ri**2)
+    A = np.array(A)
+    b = np.array(b)
+    guess_xy, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+    return guess_xy
+
+# Estimate the ROV's position using multilateration.
+def multilaterate(positions, distances, fixed_z):
+    def residual_func(point, beacon_positions, measured_distances, fixed_z):
+        return [
+            np.sqrt((point[0] - pos[0])**2 + (point[1] - pos[1])**2 + (fixed_z - pos[2])**2) - d
+            for pos, d in zip(beacon_positions, measured_distances)
+        ]
+    guess_xy = initial_guess_for_xy(positions, distances, fixed_z)
+    initial_guess = np.array([guess_xy[0], guess_xy[1]])
+    result = least_squares(residual_func, x0=initial_guess, args=(positions, distances, fixed_z), diff_step=1e-3)
+    return np.array([result.x[0], result.x[1], fixed_z])
+
+# Calculate depth (in meters) from pressure in hPa.
+def calculate_depth(pressure_hPa, surface_pressure_hPa=1013.25):
+    # Convert hPa to dbar: 1 dbar = 100 hPa.
+    pressure_dbar = pressure_hPa / 100.0
+    surface_pressure_dbar = surface_pressure_hPa / 100.0
+    depth = pressure_dbar - surface_pressure_dbar
+    depth -= 0.25
+    return -depth  # negative z-coordinate because we are below water
+
+# Sound velocity calculation (using UNESCO 1983 algorithm)
+# Python implementation from https://github.com/bjornaa/seawater/blob/master/seawater/misc.py
+def soundvel(S, T, P=0):
+    # S: Salinity [PSS-78], T: Temperature [°C], P: Pressure [dbar] (default=0)
+    P = 0.1 * P  # Convert dbar to bar
+    c00 = 1402.388; c01 =  5.03711; c02 = -5.80852e-2; c03 =  3.3420e-4; c04 = -1.47800e-6; c05 =  3.1464e-9
+    c10 =  0.153563; c11 =  6.8982e-4; c12 = -8.1788e-6; c13 =  1.3621e-7; c14 = -6.1185e-10
+    c20 =  3.1260e-5; c21 = -1.7107e-6; c22 =  2.5974e-8; c23 = -2.5335e-10; c24 =  1.0405e-12
+    c30 = -9.7729e-9; c31 =  3.8504e-10; c32 = -2.3643e-12
+    P2 = P * P; P3 = P2 * P
+    Cw = (c00 + (c01 + (c02 + (c03 + (c04 + c05 * T) * T) * T) * T) * T +
+          (c10 + (c11 + (c12 + (c13 + c14 * T) * T) * T) * T) * P +
+          (c20 + (c21 + (c22 + (c23 + c24 * T) * T) * T) * T) * P2 +
+          (c30 + (c31 + c32 * T) * T) * P3)
+    a00 =  1.389; a01 = -1.262e-2; a02 =  7.164e-5; a03 =  2.006e-6; a04 = -3.21e-8
+    a10 =  9.4742e-5; a11 = -1.2580e-5; a12 = -6.4885e-8; a13 =  1.0507e-8; a14 = -2.0122e-10
+    a20 = -3.9064e-7; a21 =  9.1041e-9; a22 = -1.6002e-10; a23 =  7.988e-12
+    a30 =  1.100e-10; a31 =  6.649e-12; a32 = -3.389e-13
+    A = (a00 + (a01 + (a02 + (a03 + a04 * T) * T) * T) * T +
+         (a10 + (a11 + (a12 + (a13 + a14 * T) * T) * T) * P +
+         (a20 + (a21 + (a22 + a23 * T) * T) * T) * P2 +
+         (a30 + (a31 + a32 * T) * T) * P3))
+    b00 = -1.922e-2; b01 = -4.42e-5; b10 =  7.3637e-5; b11 =  1.7945e-7
+    B = b00 + b01 * T + (b10 + b11 * T) * P
+    d00 =  1.727e-3; d10 = -7.9836e-6
+    D = d00 + d10 * P
+    return Cw + A * S + B * S**1.5 + D * S**2
+
+# Main receiver loop: Compute sound velocity, query distances, perform multilateration, and publish GPS_INPUT.
+async def main():
+    global mav
+    global_timeout = 2.0   # timeout for queries
+    polling_delay = 0.50   # delay between query cycles
+
+    # Open serial port
+    try:
+        reader, writer = await serial_asyncio.open_serial_connection(url='/dev/ttyUSB1', baudrate=9600)
+    except Exception as e:
+        print("Failed to open serial connection:", e)
+        return
+
+    # Start the background reader for the serial port.
+    asyncio.create_task(background_reader(reader))
+
+    # Define transponder channels and their lat/lon positions (in decimal degrees).
+    channels = ["M22", "M16", "M29", "M20"]
+    transponder_latlon = [
+        (59.428465173, 10.465137681),  # t1 (origin)
+        (59.429155409, 10.464601094),  # far
+        (59.428427280, 10.465334121),  # t3
+        #(59.428463528, 10.464801958)    # hjørnet av målestasjonen
+        (59.428464167, 10.464801112)    #nytt hjørnet av målestasjon
+        #(59.428445150, 10.465241581)   # old t2, new t4
+        #(59.428407132, 10.465439580),  # t4
+    ]
+    origin_lat, origin_lon = transponder_latlon[1]  # Use first transponder as the origin
+
+    # Convert transponder positions from lat/lon to meters.
+    transponder_depth_const = -1.5  # Static depth of placed transponders
+    transponder_positions = []
+    for i, (lat_val, lon_val) in enumerate(transponder_latlon):
+        x, y = latlon_to_meters(lat_val, lon_val, origin_lat, origin_lon)
+        # To avoid degenerate geometry, add a small offset for one transponder if needed.
+        depth_to_use = transponder_depth_const
+        if i == 0:  # example: change depth for third transponder
+            depth_to_use = -5.0
+        transponder_positions.append([x, y, depth_to_use])
+    transponder_positions = np.array(transponder_positions)
+
+    # Example of adjusting a transponder's lat/lon if needed.
+    offset = 1.0  # offset in meters
+    theta = np.deg2rad(18)
+    dx = offset * np.sin(theta)
+    dy = offset * np.cos(theta)
+    R = 6371000
+    dlat = (dy / R) * (180 / np.pi)
+    dlon = (dx / (R * np.cos(np.deg2rad(origin_lat)))) * (180 / np.pi)
+    lat_t2, lon_t2 = transponder_latlon[1]
+    transponder_latlon[1] = (lat_t2 + dlat, lon_t2 + dlon)
+    print("Adjusted transponder positions if needed.")
+
+    # Define GPS_INPUT ignore flags. We want to publish lat/lon, and avoid overriding the altitude
+    GPS_INPUT_IGNORE_FLAG_ALT = 7  # Altitude is the 8th argument (index 7)
+    ignore_flags = (mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_VEL_HORIZ |
+                    mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_VEL_VERT |
+                    mavutil.mavlink.GPS_INPUT_IGNORE_FLAG_SPEED_ACCURACY)
+
+    print("Receiver started. Polling transponders and performing multilateration...")
+
+    battery = await read_battery_level(reader, writer)
+    print("Battery reply:", battery)
+
+    version = await read_version_info(reader, writer)
+    print("Version reply:", version)
+
+    power = await set_transmit_power(reader, writer, level=4)
+    print("Power reply:", power)
+    print("-" * 70)
+
+    # Create a list to store the previous valid reading for each channel.
+    prev_distances = [None] * len(channels)
+    required_total = len(channels)   # e.g., 4 channels
+    min_new_required = 3  # require at least 3 new valid readings
+    prev_x = 0
+    prev_y = 0
+    # Main loop
+    while True:
+        responses = await get_multiple_distances(reader, writer, channels, timeout=global_timeout)
+
+        # Compute dynamic sound velocity and depth from pressure.
+        if latest_pressure is not None and latest_temp is not None:
+            P_dbar = latest_pressure / 100.0  # Convert hPa to dbar
+            dynamic_speed = soundvel(32, latest_temp, P_dbar)
+            fixed_z = calculate_depth(latest_pressure)
+        else:
+            dynamic_speed = 1500  # Fallback value
+            fixed_z = 0
+
+        distances = []
+        new_valid_flags = []  # True if this channel provided a new valid reading
+
+        for i, (ch, resp) in enumerate(zip(channels, responses)):
+            new_reading = None
+            if resp:
+                new_reading = parse_distance(resp, dynamic_speed)
+            # Check if the new reading is valid (i.e. not None and not 0.0)
+            if new_reading is not None and new_reading != 0.0:
+                d = new_reading
+                is_new = True
+                print(f"Channel {ch} new reading: {d} m")
+            else:
+                # Fallback: use the previous valid reading if available.
+                if prev_distances[i] is not None:
+                    d = prev_distances[i]
+                    is_new = False
+                    print(f"Channel {ch} invalid new reading. Using previous valid reading: {d} m")
+                else:
+                    d = None
+                    is_new = False
+                    print(f"Channel {ch} invalid new reading and no previous reading available.")
+            distances.append(d)
+            new_valid_flags.append(is_new if d is not None else False)
+            # Update stored reading only if we got a fresh valid measurement.
+            if is_new and d is not None:
+                prev_distances[i] = d
+
+        new_valid_count = sum(1 for flag in new_valid_flags if flag)
+        print(f"New valid readings: {new_valid_count} / {required_total} (required: {min_new_required})")
+
+        # Only proceed if all channels have some reading (even fallback) and at least the minimum number are new.
+        if all(d is not None and d != 0.0 for d in distances) and new_valid_count >= min_new_required:
+            # Perform multilateration using all channels (some may be fallback values)
+            est = multilaterate(transponder_positions, np.array(distances), fixed_z)
+            est_lat, est_lon = meters_to_latlon(est[0], est[1], origin_lat, origin_lon)
+            offset = np.sqrt((prev_x-est[0])**2 + (prev_y-est[1])**2)
+            print("\n[Multilateration Result]")
+            print("Estimated position (meters):", est)
+            print("Estimated position (lat, lon, z):", est_lat, est_lon, est[2])
+            print(f"Calculated offset: {offset}")
+            print("-" * 95)
+
+            prev_x = est[0]
+            prev_y = est[1]
+
+            # Publish the calculated GPS coordinates using GPS_INPUT.
+            mav.mav.gps_input_send(
+                int(time.time() * 1e6),  # Timestamp (microseconds)
+                0,                       # GPS ID (0 for primary)
+                ignore_flags,            # Flags (including altitude ignore)
+                0,                       # GPS time (ms from start of week; 0 if unknown)
+                0,                       # GPS week number (0 if unknown)
+                3,                       # Fix type: 3 = 3D fix
+                int(est_lat * 1e7),      # Latitude (WGS84 * 1E7)
+                int(est_lon * 1e7),      # Longitude (WGS84 * 1E7)
+                0.0,                     # Altitude in meters (dummy, ignored)
+                1.0,                     # HDOP
+                1.0,                     # VDOP
+                0.0,                     # Velocity North
+                0.0,                     # Velocity East
+                0.0,                     # Velocity Down
+                100.0,                     # Speed accuracy (1.0 works ok, 5 is better)
+                0.6,                     # Horizontal accuracy
+                0.1,                     # Vertical accuracy
+                17                       # Number of satellites
+            )
+            print("Published GPS_INPUT message (lat/lon only).")
+        else:
+            print("Not enough new valid readings. Skipping multilateration cycle.\n")
+
+        await asyncio.sleep(polling_delay)
+
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    # Initialize global MAVLink connection.
+    mav = mavutil.mavlink_connection('udpin:0.0.0.0:7777')
+    print("Waiting for heartbeat from system...")
+    mav.wait_heartbeat()
+    print("Heartbeat received from system (system %u component %u)" %
+          (mav.target_system, mav.target_component))
+
+    # Start the MAVLink listener thread.
+    listener_thread = threading.Thread(target=mavlink_listener, daemon=True)
+    listener_thread.start()
+
+    # Start the main async loop.
+    asyncio.run(main())
