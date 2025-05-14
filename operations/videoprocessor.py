@@ -11,6 +11,8 @@ import time
 import gi
 import socket
 import struct
+import paho.mqtt.client as mqtt
+import json
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
@@ -148,65 +150,37 @@ class Video():
         return Gst.FlowReturn.OK
 
 
-# Isolate white-ish RGB values, should correspond to the pipe
+# Isolate white-ish regions corresponding to the pipe.
 def isolate_pipe(image):
-    """
-    Isolate white-ish regions (the pipe) in the input image.
-    Returns the isolated image and the binary mask.
-    """
-    # Convert to HSV and define a white-ish range.
     hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
     lower_white = np.array([0, 0, 200])
     upper_white = np.array([255, 255, 255])
     mask = cv.inRange(hsv, lower_white, upper_white)
 
-    # Morphological operations: close gaps then remove noise.
     kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5))
     mask_closed = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel)
     mask_clean = cv.morphologyEx(mask_closed, cv.MORPH_OPEN, kernel)
 
-    # Apply the mask to the original image.
     isolated = cv.bitwise_and(image, image, mask=mask_clean)
     return isolated, mask_clean
 
 def extract_centerline(binary, min_dist=5):
-    """
-    Given a binary image (foreground=255, background=0) of the isolated pipe,
-    compute its distance transform, extract the local maxima (medial axis), and
-    dilate the thin centerline to a thicker version.
-    Returns a binary image representing the thick centerline.
-    """
-    # Compute distance transform.
     dist = cv.distanceTransform(binary, cv.DIST_L2, 5)
-    # Dilate the distance transform.
     kernel = np.ones((3, 3), np.uint8)
     dilated = cv.dilate(dist, kernel)
-    # Find local maxima: pixels equal to the dilated value.
     local_max = (dist == dilated)
-    # Keep only pixels above a minimum distance threshold.
     local_max = np.logical_and(local_max, dist >= min_dist)
     thin_centerline = np.uint8(local_max * 255)
-    # Dilate the thin centerline to get a thicker centerline.
     thick_kernel = cv.getStructuringElement(cv.MORPH_RECT, (7, 7))
     thick_centerline = cv.dilate(thin_centerline, thick_kernel, iterations=1)
     return thick_centerline
 
 def compute_line_angle(line):
-    """
-    Compute the normalized angle (in radians, in [0,pi)) of a line segment.
-    The input line is ((x1,y1),(x2,y2)).
-    """
     (x1, y1), (x2, y2) = line
-    phi = math.atan2(y2 - y1, x2 - x1) % math.pi
+    phi = -math.atan2(x2 - x1,y2 - y1) % math.pi
     return phi
 
 def cluster_lines_by_angle(lines, angle_thresh=0.3):
-    """
-    Given a list of line segments (each as ((x1,y1),(x2,y2))),
-    cluster them by their angle. Two lines are placed in the same cluster
-    if their angle difference is less than angle_thresh (in radians).
-    Returns a list of clusters (each a list of line segments).
-    """
     if not lines:
         return []
     lines = sorted(lines, key=lambda l: compute_line_angle(l))
@@ -228,21 +202,13 @@ def cluster_lines_by_angle(lines, angle_thresh=0.3):
     return clusters
 
 def merge_cluster(cluster):
-    """
-    Merge a cluster of line segments (each as ((x1,y1),(x2,y2)))
-    into a single representative line by projecting all endpoints along
-    the average line direction and taking the extremes.
-    Returns the merged line as ((x_min, y_min), (x_max, y_max)).
-    """
     if not cluster:
         return None
-    # Collect all endpoints.
     points = []
     for (p1, p2) in cluster:
         points.append(p1)
         points.append(p2)
     points = np.array(points, dtype=np.float32)
-    # Compute the average angle of the cluster.
     sin_sum = 0.0
     cos_sum = 0.0
     for (p1, p2) in cluster:
@@ -251,12 +217,10 @@ def merge_cluster(cluster):
         cos_sum += math.cos(phi)
     avg_phi = math.atan2(sin_sum, cos_sum)
     direction = np.array([math.cos(avg_phi), math.sin(avg_phi)])
-    # Project each point on the direction.
     projections = [np.dot(pt, direction) for pt in points]
     min_proj = min(projections)
     max_proj = max(projections)
     center = np.mean(points, axis=0)
-    # Compute extreme endpoints relative to the center.
     pt_min = (int(center[0] + (min_proj - np.dot(center, direction)) * direction[0]),
               int(center[1] + (min_proj - np.dot(center, direction)) * direction[1]))
     pt_max = (int(center[0] + (max_proj - np.dot(center, direction)) * direction[0]),
@@ -264,61 +228,53 @@ def merge_cluster(cluster):
     return (pt_min, pt_max)
 
 def compute_phi_e(p1, p2):
-    """
-    Compute the deviation phi_e (in radians) of the line (p1,p2)
-    from vertical. Specifically, phi_e = phi_pipe - (pi/2) normalized to [-pi/2, pi/2].
-    """
     phi_pipe = math.atan2(p2[0] - p1[0], p2[1] - p1[1])
-    phi_e = phi_pipe - (math.pi / 2)
+    phi_e = -phi_pipe
     while phi_e < -math.pi/2:
         phi_e += math.pi
     while phi_e > math.pi/2:
         phi_e -= math.pi
     return phi_e
 
+def connect_socket(ip, port):
+    """Attempt to connect to the given IP and port. Retry until successful."""
+    while True:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((ip, port))
+            print(f"Connected to {ip}:{port}")
+            return sock
+        except Exception as e:
+            print(f"Connection to {ip}:{port} failed with error: {e}. Retrying in 1 second.")
+            time.sleep(1)
+
 def main(argv):
     video = Video(port=5601)
-
-    LOCALIP = "127.0.0.1"
+    sock_local, sock_remote, sock_video = None, None, None  
+    # Establish initial socket connections.
     REMOTEIP = "192.168.2.1"
-    PORT = 8888
     VIDEOPORT = 8889
-    sock_local = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock_remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock_video = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #sock_video = connect_socket(REMOTEIP, VIDEOPORT)
 
-    # Connect to the socket, retrying until successful
-    while True:
-        try:
-            sock_local.connect((LOCALIP, PORT))
-            #sock_remote.connect((REMOTEIP, PORT)) # will be used for digital twin
-            sock_video.connect((REMOTEIP, VIDEOPORT)) # used for sending the processed vidoestream to topside. Seperate port so we dont conflict with the phi_e and y_e data.
-            break  # Exit the loop when connection is successful
-        except ConnectionRefusedError:
-            print("Connection refused, retrying in 1 second...")
-            time.sleep(1)
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            time.sleep(1)
+    # Connect to MQTT
+    mqtt_client = mqtt.Client()
+    mqtt_client.connect("localhost", 1883)  # Or replace with your broker IP
 
-    print("Established a connection with server(s).")
+    print("Established connections with server(s).")
 
     while True:
         if not video.frame_available():
             continue
-        
+
         try:
             image = video.frame()
-
             start_time = time.time()
+
+            # Process the image.
             isolated, _ = isolate_pipe(image)
             gray = cv.cvtColor(isolated, cv.COLOR_BGR2GRAY)
             _, binary = cv.threshold(gray, 127, 255, cv.THRESH_BINARY)
-
-            # Extract a centerline ("skeleton") from the binary image.
             centerline = extract_centerline(binary, min_dist=3)
-
-            # Run the Probabilistic Hough Transform on the centerline.
             linesP = cv.HoughLinesP(centerline, 1, np.pi/180, threshold=10, minLineLength=30, maxLineGap=10)
             hough_lines = []
             if linesP is not None:
@@ -329,7 +285,6 @@ def main(argv):
                 print("No Hough segments detected on the centerline.")
                 continue
 
-            # Cluster the segments by angle.
             clusters = cluster_lines_by_angle(hough_lines, angle_thresh=0.3)
             final_lines = []
             for cluster in clusters:
@@ -338,47 +293,53 @@ def main(argv):
                     final_lines.append(merged)
 
             img_center_x = int(image.shape[1] / 2)
-
-            # Get the bottom line, find y_e and phi_e 
-            pt1, pt2 = max(final_lines, key=lambda line: max(line[0][1], line[1][1])) if final_lines else None
-            phi_e = compute_phi_e(pt1, pt2)
-            phi_e_deg = math.degrees(phi_e)
-            bottom_pt = pt1 if pt1[1] > pt2[1] else pt2
-            y_e = bottom_pt[0] - img_center_x
-            data_str = f"{y_e};{phi_e_deg}\n" #idk why newline men de var i testscriptet til robin
-
-            try:
-                sock_local.sendall(data_str.encode('utf-8'))
-                #sock_remote.sendall(data_str.encode('utf-8')) # will be used for digital twin. Commenting out for now because there is no server yet
-            except Exception as e:
-                print(f"Error sending message: {e}")
-
-            # DRAW OUR DETECTIONS ON IMAGE
-            out_img = image.copy()
-            img_center_x = int(image.shape[1] / 2)  # Draw the vertical center line.
-            cv.line(out_img, (img_center_x, 0), (img_center_x, image.shape[0]), (255, 0, 0), 2, cv.LINE_AA)
-            # For each final line, draw it and compute parameters.
-            for idx, (pt1, pt2) in enumerate(final_lines):
-                cv.line(out_img, pt1, pt2, (0, 255, 0), 3, cv.LINE_AA)
+            if final_lines:
+                pt1, pt2 = max(final_lines, key=lambda line: max(line[0][1], line[1][1]))
+                phi_e = compute_phi_e(pt1, pt2)
+                phi_e_deg = math.degrees(phi_e)
                 bottom_pt = pt1 if pt1[1] > pt2[1] else pt2
                 y_e = bottom_pt[0] - img_center_x
-                cv.circle(out_img, bottom_pt, 5, (255, 0, 0), -1)
-                center_dot = (img_center_x, bottom_pt[1])
-                cv.circle(out_img, center_dot, 5, (255, 0, 0), -1)
-                cv.line(out_img, bottom_pt, center_dot, (255, 0, 0), 2, cv.LINE_AA)
+                data_str = f"{y_e};{phi_e_deg}\n" 
+            else:
+                print("No final lines detected.")
+                continue
 
-            # Encode the image to a jpg and 
-            retval, buffer = cv.imencode('.jpg', out_img)
-            data = buffer.tobytes()
-            header = struct.pack('>I', len(data)) # send the length of the image data
-            try:
-                sock_video.sendall(header + data)
-            except Exception as e:
-                print(f"Error sending image: {e}")
-        
-            print(f"Processing time: {time.time() - start_time} seconds") # diagnositcs print to see how often we can process frames.
+            pipe_msg = {
+                        "distance": int(y_e),               # lateral offset in pixels
+                        "angle": round(phi_e_deg, 2),       # angle in degrees
+                        "timestamp": time.time()
+                        }
+
+            mqtt_client.publish("/pipe", json.dumps(pipe_msg))
+
+
+            if sock_video is not None:
+                # Draw detections on the image.
+                out_img = image.copy()
+                cv.line(out_img, (img_center_x, 0), (img_center_x, image.shape[0]), (255, 0, 0), 2, cv.LINE_AA)
+                for idx, (pt1, pt2) in enumerate(final_lines):
+                    cv.line(out_img, pt1, pt2, (0, 255, 0), 3, cv.LINE_AA)
+                    bottom_pt = pt1 if pt1[1] > pt2[1] else pt2
+                    cv.circle(out_img, bottom_pt, 5, (255, 0, 0), -1)
+                    center_dot = (img_center_x, bottom_pt[1])
+                    cv.circle(out_img, center_dot, 5, (255, 0, 0), -1)
+                    cv.line(out_img, bottom_pt, center_dot, (255, 0, 0), 2, cv.LINE_AA)
+
+                # Encode the processed image and send it via the video socket.
+                retval, buffer = cv.imencode('.jpg', out_img)
+                data = buffer.tobytes()
+                header = struct.pack('>I', len(data))  # Send the length of the image data
+                try:
+                    sock_video.sendall(header + data)
+                except Exception as e:
+                    print(f"Error sending image on sock_video: {e}")
+                    sock_video.close()
+                    sock_video = connect_socket(REMOTEIP, VIDEOPORT)
+
+            print(f"Processing time: {time.time() - start_time} seconds")
         except Exception as e:
             print(f"Error processing frame: {e}")
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
