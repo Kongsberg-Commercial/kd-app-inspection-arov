@@ -23,8 +23,8 @@ If the cPAP does not receive any queries after a certain amount of time, it may 
 
 ### Image processor
 
-### PID controller
+### Pipefollow Controller
 
 ### Odometry Publisher
 
-### Ultrasonic Depth-sensor
+### Collision Avoidance
