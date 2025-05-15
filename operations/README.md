@@ -23,10 +23,55 @@ If the cPAP does not receive any queries after a certain amount of time, it may 
 
 ### Image-processor
 
+This script finds the angular error $\theta_e$ and lateral error $Y_e$ using OpenCV image processing on frames taken from the video feed. These are used by the pipefollow controller to correct the ROV's position.
+
+##### Running
+
+This script is located in `/home/pi/python/testing/mavlink_testing/` can be run using the command:
+
+```
+env/bin/python3 videoprocessor.py
+```
+
+Due to dependency issues with NumPy 2, this script has to be run using the python binary from the virtual environment folder. 
+
+##### Troubleshooting
+Ensure the correct python binary is used!
+Ensure that the necessary ports / sockets are open, this can be checked in the main function of the code. 
+
+
+
 ### Pipefollow Controller
+
+This script receives the angular error $\theta_e$ and lateral error $Y_e$ from the image-processor and controls the ROV using a PID-controller system. 
+
+##### Running
+
+The script can be found in `/home/pi/python/main` and can be run with the command:
+
+```
+python3 pipefollow_controller.py
+```
 
 ### Odometry Publisher
 
 ### Collision Avoidance
 
+
+
 ### Cpap connection tester
+
+This script can be useful to verify that connection with the cPAP is established before releasing the ROV into the water. 
+This script simply checks the cPAP's battery. If the cPAP does not reply with a battery percentage, refer to the troubleshooting section
+
+##### Running
+
+The script can be run usint
+
+```
+python3 cpap_test.py
+```
+
+##### Troubleshooting
+If no battery percentage is retrieved, ensure that the correct `/dev/ttyUSB` port is used. 
+If the correct port is used, and no other scripts are connected to the serial port, then the cPAP may have entered sleep-mode. Replug the cPAP to wake it up.
