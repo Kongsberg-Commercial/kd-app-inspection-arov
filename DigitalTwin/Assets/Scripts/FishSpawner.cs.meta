@@ -1,0 +1,12 @@
+fileFormatVersion: 2
+guid: 08f4d22e3835f3743b1c7c3c7c365e5f
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - fishPrefab: {fileID: 489407797367727843, guid: 75f1469ae217e364aafe08523837d5da, type: 3}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
