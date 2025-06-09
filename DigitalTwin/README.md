@@ -10,29 +10,34 @@ The digital twin visualizes real-time telemetry and positioning data from an ROV
 -Pipe-following visualization and acoustic positioning feedback  
 -Built-in Unity using C# scripting and MQTT libraries  
 
-## Requirements  
--Unity 2021.3 LTS or later (tested on Unity 2021.3.X)  
--MQTT Broker   
--ROV system running MQTT-compatible telemetry (e.g., Raspberry Pi with MQTT publisher)  
--.NET Standard 2.0-compatible MQTT library (e.g., MQTTnet)  
-
 ## Project Structure  
 /Assets  
-  /Scripts            -> C# scripts for data parsing and object control  
-  /Prefabs            -> BlueROV2 model and components  
-  /Scenes             -> Main Unity scenes  
+  BlueRov2_underwaterscene.unity -> Main scene  
+  /Scripts            -> C# scripts
+  /StaticCamera       -> Script for the static camera  
+  /Prefabs            -> Models and components  
   /Materials          -> Visual assets and effects  
+  /Model              -> BlueROV2 model  
+  /Pipes              -> Model of the pipe  
 README.md  
 
 Getting Started  
 Clone the repository   
 Open the project in Unity Hub.  
+Open the main scene "BlueRov2_underwaterscene.unity". 
+In the "ControlManager" gameobject in the hierarchy make sure the "Use Remote Control" is checked to enable MQTT data reception.  
+In the "ROV-box" gameobject under "Smooth Mqtt Receiver" script, set the "Odom Y Offset" to 6 when navigating locally and 0.66 when navigating using the MQTT data.  
 Make sure your MQTT broker is running and configured to accept telemetry data.  
-In Unity, press Play to start the simulation.   
+In Unity, press Play to start the simulation.  
+
+Guiding around in the 3D scene  
+Use the wasd, arrows and qe on the keyboard to locally navigate around in the 3D scene.  
+Press c on the keyboard in order to swicth views.  
 
 MQTT Topics Used  
 /pipe – Pipe-following controller data  
 /odom – Odometry and ROV position  
+/pipefollowspeed - Gived data to the digital twin in order to drive forward and follow the pipe  
 
 Acknowledgments  
 This project was developed as part of the bachelor thesis:  
