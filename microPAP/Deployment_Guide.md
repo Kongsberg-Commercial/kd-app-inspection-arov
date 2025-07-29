@@ -16,4 +16,4 @@ Open a terminal on the computer find the path where the launch file is located b
 <pre> cd Documents/microPAP </pre>
 
 Then you should launch the launch file by using the following command:  
-launch_all.bat  
+<pre> launch_all.bat </pre>  
