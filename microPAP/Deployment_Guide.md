@@ -2,7 +2,7 @@
 This repository contains scripts and instructions to deploy the end-to-end data flow between the MQTT broker, HiPOS and the ROV in order to position the ROV regarding the USV (RAN).    
 
 ##  Required scritps  
-# Launch files:  
+Launch files:  
 launch_all.bat  
 lunc_topside
 
