@@ -1,11 +1,19 @@
 ## Deployment Guide
-This repository contains scripts and instructions to deploy the end-to-end data flow between the MQTT broker, HiPOS and the ROV.  
+This repository contains scripts and instructions to deploy the end-to-end data flow between the MQTT broker, HiPOS and the ROV in order to position the ROV regarding the USV (RAN).    
 
 ## Software Requirements  
--HIPOS software on computer  
--Active license for the adapter between the ethernet cabel and the computer  
--QGroundCOntrol Software  
+-HIPOS software downloaded with correctly setup on the computer onboard the boat.  
+-Active license for the adapter between the ethernet cabel and the computer.  
+-QGroundControl Software downloaded and set up correctly.   
 
 ## Setup & Run  
 -Installing and running HIPOS Software on the windows computer (tailscle IP adress: 100.65.237.59 with name kpc22033722-rov-computer).  
 -Set up  
+
+## Scripts  
+-Run the launch file on the kpc22033722-rov-computer called "launch_all.bat"  
+Open a terminal on the computer find the path where the launch file is located by using the following command:  
+cd Documents/microPAP  
+
+Then you should launch the launch file by using the following command:  
+launch_all.bat  
