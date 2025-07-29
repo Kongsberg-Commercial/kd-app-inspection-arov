@@ -13,7 +13,7 @@ This repository contains scripts and instructions to deploy the end-to-end data 
 ## Scripts  
 -Run the launch file on the kpc22033722-rov-computer called "launch_all.bat"  
 Open a terminal on the computer find the path where the launch file is located by using the following command:  
-cd Documents/microPAP  
+<pre> ```cd Documents/microPAP ``` </pre>
 
 Then you should launch the launch file by using the following command:  
 launch_all.bat  
