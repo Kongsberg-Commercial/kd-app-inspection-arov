@@ -17,3 +17,4 @@ Open a terminal on the computer find the path where the launch file is located b
 
 Then you should launch the launch file by using the following command:  
 <pre> launch_all.bat </pre>  
+This will launch the two scrips hipos_interface.py and mqtt_pposition.py.  
