@@ -1,0 +1,3 @@
+ mavproxy.exe --master=udp:192.168.2.1:14550 --master=udpin:127.0.0.1:14550 --out=udp:100.127.125.86:14550 --console
+
+python .\stream_video.py --remote-ip 100.127.125.86
