@@ -3,7 +3,7 @@
 import socket
 
 HOST = '0.0.0.0' 
-PORT = 6003  
+PORT = 6005  
 
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
