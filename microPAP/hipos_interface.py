@@ -25,7 +25,7 @@ OUTPUT_PORT   = 5005    # PSIMSSB UDP port
 
 # cNODE‐TCP destination
 POSITION_HOST = "192.168.2.2"
-POSITION_PORT = 6003
+POSITION_PORT = 6005
 
 UTM_EPSG      = "32632"
 # ————————————————
