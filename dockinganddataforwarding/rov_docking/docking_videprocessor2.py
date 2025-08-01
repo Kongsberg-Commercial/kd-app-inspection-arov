@@ -178,9 +178,9 @@ def main():
         cv.createTrackbar(name, "Controls", default, maximum, lambda x: None)
 
     # HSV & shape filters
-    tb('L1_H_min', 26, 179); tb('L1_H_max', 35, 179)
-    tb('L1_S_min', 25, 255); tb('L1_S_max',115, 255)
-    tb('L1_V_min',165, 255); tb('L1_V_max',240, 255)
+    tb('L1_H_min', 26, 179); tb('L1_H_max', 38, 179)
+    tb('L1_S_min', 35, 255); tb('L1_S_max',115, 255)
+    tb('L1_V_min',165, 255); tb('L1_V_max',255, 255)
     tb('L2_H_min', 12, 179); tb('L2_H_max', 38, 179)
     tb('L2_S_min',  5, 255); tb('L2_S_max', 50, 255)
     tb('L2_V_min',100, 255); tb('L2_V_max',255, 255)
@@ -189,8 +189,8 @@ def main():
 
     # smoothing, priority, vertical tolerance
     tb('Smooth%',100,100)
-    tb('Priority', 48,100)
-    tb('AngTol',  18,90)  # degrees from vertical (0°) you’ll accept
+    tb('Priority', 51,100)
+    tb('AngTol',  12,90)  # degrees from vertical (0°) you’ll accept
 
     paused = False
     last = None
@@ -233,7 +233,7 @@ def main():
                     ret, frame = cap.read()
                     if not ret:
                         print("🔁 End of file.")
-                        break
+                        continue
                 else:
                     if not video.frame_available():
                         continue
