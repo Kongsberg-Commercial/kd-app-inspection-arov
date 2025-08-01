@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 BROKER_HOST   = "100.78.45.94"
 BROKER_PORT   = 1883
 TOPIC_IN      = "sommer/position"
+TOPIC_OUT     = "sommer/rovposition"
 USERNAME      = "formula2boat"
 PASSWORD      = "formula2boat"
 
@@ -20,7 +21,7 @@ INPUT_HOST    = "127.0.0.1"
 GPS_PORT      = 6001    # fake_gps.py port
 HEADING_PORT  = 6002    # fake_heading.py port
 
-OUTPUT_HOST   = "0.0.0.0"
+OUTPUT_HOST   = "127.0.0.1"
 OUTPUT_PORT   = 5005    # PSIMSSB UDP port
 
 # cNODE‐TCP destination
@@ -36,12 +37,12 @@ transformer = Transformer.from_crs(f"epsg:{UTM_EPSG}", "epsg:4326", always_xy=Tr
 # Setup UDP sockets
 gps_sock     = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 heading_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
+    
 output_sock  = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 output_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 output_sock.bind((OUTPUT_HOST, OUTPUT_PORT))
 
-# MQTT client (for input)
+# MQTT client (for input and output)
 client = mqtt.Client()
 
 # ——— NMEA sentence builders ———
@@ -87,7 +88,7 @@ def on_message(client, userdata, msg):
         payload = msg.payload.decode("utf-8", errors="ignore")
         data    = json.loads(payload)
         lat     = float(data["lat"])
-        lon     = float(data["lng"])      # note: new field is 'lng'
+        lon     = float(data["lng"])
         hdg     = float(data["heading"])
     except Exception as e:
         logging.warning(f"Bad MQTT payload on {msg.topic}: {e}")
@@ -105,6 +106,8 @@ def on_message(client, userdata, msg):
     gps_sock.sendto(gga, (INPUT_HOST, GPS_PORT))
     heading_sock.sendto(hdt, (INPUT_HOST, HEADING_PORT))
 
+# Configure MQTT client
+tls = False  # adjust if using TLS
 client.username_pw_set(USERNAME, PASSWORD)
 client.on_connect = on_connect
 client.on_message = on_message
@@ -128,20 +131,23 @@ def udp_loop():
             continue
 
         parts = text.split('*')[0].split(',')
+        # Only process UTM messages
         if len(parts) < 12 or parts[5] != 'U':
             continue
 
         try:
             northing = float(parts[8])
             easting  = float(parts[9])
+            down     = float(parts[10])
         except ValueError:
             continue
 
+        # Convert to WGS84 lat/lon
         lon, lat = transformer.transform(easting, northing)
         pos_str  = f"{lat};{lon}"
-        print(f"[bridge → cNODE TCP] {pos_str}")
+        print(f"[bridge → cNODE TCP] {pos_str} (down={down})")
 
-        # Send over TCP
+        # Send over TCP to cNODE
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tsock:
                 tsock.settimeout(2)
@@ -150,12 +156,20 @@ def udp_loop():
         except Exception as e:
             logging.error(f"Failed to send to cNODE {POSITION_HOST}:{POSITION_PORT}: {e}")
 
+        # Publish ROV position and down to MQTT
+        try:
+            payload_out = json.dumps({"lat": lat, "lng": lon, "down": down})
+            client.publish(TOPIC_OUT, payload_out)
+            logging.info(f"Published ROV position to {TOPIC_OUT}: {payload_out}")
+        except Exception as e:
+            logging.error(f"Failed to publish ROV position to MQTT: {e}")
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s: %(message)s")
     threading.Thread(target=mqtt_loop, daemon=True).start()
     threading.Thread(target=udp_loop,   daemon=True).start()
-    logging.info("HiPOS↔cNODE-TCP bridge running")
+    logging.info("HiPOS↔cNODE-TCP bridge running with MQTT output on '%s'", TOPIC_OUT)
     try:
         while True:
             time.sleep(1)
