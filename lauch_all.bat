@@ -17,19 +17,21 @@ TIMEOUT /T 3 >nul
 
 echo.
 REM ==== 0b) GStreamer Capture (in rov2 env) ====
-START "GStreamer Capture" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! mp4mux faststart=true name=mux ! filesink location=\"C:\path\to\output.mp4\" sync=false"
+REM START "GStreamer Capture" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! mp4mux faststart=true name=mux ! filesink location=\"C:\path\to\output.mp4\" sync=false"
+
+START "GStreamer Capture" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5602 caps=""application/x-rtp,encoding-name=H264,payload=96"" ! rtph264depay ! h264parse config-interval=1 ! matroskamux ! filesink location=""C:\path\to\output.mkv"" sync=false"
 
 TIMEOUT /T 3 >nul
 
 echo.
 REM ==== 1) Docking Video Processor (in conda) ====
-START "Dock Video Proc" cmd /k "call conda activate rov2 && cd /d %~dp0dockinganddataforwarding\rov_docking && C:\Users\larsmo\AppData\Local\miniconda3\envs\rov2\python.exe docking_videprocessor2.py --stream-port 5606 --height 600 --width 800 --pause 20 --win-size 0.8"
+REM START "Dock Video Proc" cmd /k "call conda activate rov2 && cd /d %~dp0dockinganddataforwarding\rov_docking && C:\Users\larsmo\AppData\Local\miniconda3\envs\rov2\python.exe docking_videprocessor2.py --stream-port 5606 --height 600 --width 800 --pause 20 --win-size 0.8"
 
 TIMEOUT /T 2 >nul
 
 echo.
 REM ==== 2) GStreamer UDP→UDP H.264 Tunnel (in conda) ====
-START "GStreamer" cmd /k "call conda activate rov2 && gst-launch-1.0 -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! udpsink host=127.0.0.1 port=5606 sync=false"
+REM START "GStreamer" cmd /k "call conda activate rov2 && gst-launch-1.0 -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! udpsink host=127.0.0.1 port=5606 sync=false"
 
 TIMEOUT /T 2 >nul
 
