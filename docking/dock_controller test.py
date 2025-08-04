@@ -14,7 +14,7 @@ from pymavlink import mavutil
 # === Configuration ===
 SIMULATION_MODE = True                     # ✅ Set to False when ready to control the real ROV
 
-BROKER_IP       = '100.78.45.94'           # MQTT broker IP address
+BROKER_IP       = '100.86.23.108'           # MQTT broker IP address
 BROKER_PORT     = 1883                     # MQTT broker port
 MQTT_USERNAME   = 'formula2boat'           # 🔐 Your MQTT username
 MQTT_PASSWORD   = 'formula2boat'           # 🔐 Your MQTT password

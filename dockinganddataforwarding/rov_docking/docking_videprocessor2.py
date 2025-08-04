@@ -204,7 +204,7 @@ def main():
         client.username_pw_set("formula2boat","formula2boat")
         client.loop_start()
         try:
-            client.connect_async("100.78.45.94", 1883, keepalive=60)
+            client.connect_async("100.86.23.108", 1883, keepalive=60)
         except:
             args.no_mqtt = True
 

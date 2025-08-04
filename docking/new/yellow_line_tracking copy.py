@@ -18,7 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEO_FILE = os.path.join(BASE_DIR, "platform6.mp4")  # Change to your video file
 VIDEO_PORT = 5601
 
-BROKER_IP = "100.78.45.94"
+BROKER_IP = "100.86.23.108"
 BROKER_PORT = 1883
 MQTT_TOPIC = "bluerov2/platform"
 MQTT_USERNAME = "formula2boat"

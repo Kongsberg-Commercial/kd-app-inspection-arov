@@ -10,7 +10,7 @@ from pyproj import Transformer
 import paho.mqtt.client as mqtt
 
 # ——— Configuration ———
-BROKER_HOST   = "100.78.45.94"
+BROKER_HOST   = "100.86.23.108"
 BROKER_PORT   = 1883
 TOPIC_IN      = "sommer/position"
 TOPIC_OUT     = "sommer/rovposition"

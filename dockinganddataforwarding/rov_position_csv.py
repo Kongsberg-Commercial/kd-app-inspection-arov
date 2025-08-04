@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
 # ——— Configuration ———
-BROKER_HOST = "100.78.45.94"    
+BROKER_HOST = "100.86.23.108"    
 BROKER_PORT = 1883
 TOPIC       = "sommer/rovposition"
 USERNAME    = "formula2boat"

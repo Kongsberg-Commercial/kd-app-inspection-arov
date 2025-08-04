@@ -10,7 +10,7 @@ from pyproj import Transformer
 import paho.mqtt.client as mqtt
 
 # --- Configuration ---
-REMOTE_BROKER_HOST = "100.78.45.94"
+REMOTE_BROKER_HOST = "100.86.23.108"
 REMOTE_BROKER_PORT = 1883
 MQTT_USERNAME = "formula2boat"
 MQTT_PASSWORD = "formula2boat"

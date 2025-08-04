@@ -14,7 +14,7 @@ DOCK_AXIS          = 5   # other shoulder trigger for docking
 PLATFORM_THRESHOLD = 0.6
 DOCK_THRESHOLD     = 0.6
 
-MQTT_BROKER   = '100.78.45.94'
+MQTT_BROKER   = '100.86.23.108'
 MQTT_PORT     = 1883
 MQTT_USERNAME = 'formula2boat'
 MQTT_PASSWORD = 'formula2boat'

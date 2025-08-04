@@ -7,7 +7,7 @@ SERIAL_PORT = 'COM5'  # Update to match your system, e.g., '/dev/ttyUSB0'
 BAUD_RATE = 9600
 
 # --- MQTT Configuration ---
-MQTT_BROKER = '100.78.45.94'  # Or IP address of your MQTT broker
+MQTT_BROKER = '100.86.23.108'  # Or IP address of your MQTT broker
 MQTT_PORT = 1883
 MQTT_TOPIC = '/rov_deployment'
 MQTT_PASSWORD = 'formula2boat'  # Optional, if your broker requires authentication

@@ -10,7 +10,7 @@ import paho.mqtt.client as mqtt
 from pymavlink import mavutil
 
 # === Configuration ===
-BROKER_IP       = '100.78.45.94'          # MQTT broker IP address
+BROKER_IP       = '100.86.23.108'          # MQTT broker IP address
 BROKER_PORT     = 1883                    # MQTT broker port
 PLATFORM_TOPIC  = 'bluerov2/platform'     # MQTT topic for platform data
 # For MAVLink: to listen on port 7777 use 'udpin:0.0.0.0:7777';

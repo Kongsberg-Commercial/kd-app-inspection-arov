@@ -16,7 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PLATFORM_SCRIPT = os.path.join(BASE_DIR, "videoprosessor_test.py")
 LINE_SCRIPT     = os.path.join(BASE_DIR, "yellow_line_tracking.py")
 
-BROKER_IP = "100.78.45.94"
+BROKER_IP = "100.86.23.108"
 BROKER_PORT = 1883
 MQTT_TOPIC = "bluerov2/platform"
 
