@@ -17,8 +17,6 @@ TIMEOUT /T 3 >nul
 
 echo.
 REM ==== 0b) GStreamer Capture (in rov2 env) ====
-REM START "GStreamer Capture" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! mp4mux faststart=true name=mux ! filesink location=\"C:\path\to\output.mp4\" sync=false"
-
 START "GStreamer Capture" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5602 caps=""application/x-rtp,encoding-name=H264,payload=96"" ! rtph264depay ! h264parse config-interval=1 ! matroskamux ! filesink location=""C:\path\to\output.mkv"" sync=false"
 
 TIMEOUT /T 3 >nul
@@ -31,7 +29,7 @@ TIMEOUT /T 2 >nul
 
 echo.
 REM ==== 2) GStreamer UDP→UDP H.264 Tunnel (in conda) ====
-REM START "GStreamer" cmd /k "call conda activate rov2 && gst-launch-1.0 -v udpsrc port=5602 caps=\"application/x-rtp,encoding-name=H264,payload=96\" ! rtph264depay ! h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! udpsink host=127.0.0.1 port=5606 sync=false"
+REM START "GStreamer" cmd /k "call conda activate rov2 && gst-launch-1.0 -v udpsrc port=5602 caps=""application/x-rtp,encoding-name=H264,payload=96"" ! rtph264depay ! h264parse config-interval=1 ! video/x-h264,stream-format=byte-stream,alignment=au ! udpsink host=127.0.0.1 port=5606 sync=false"
 
 TIMEOUT /T 2 >nul
 
@@ -42,8 +40,8 @@ START "MAVProxy" cmd /k "cd /d %~dp0dockinganddataforwarding && mavproxy.exe --m
 TIMEOUT /T 2 >nul
 
 echo.
-REM ==== 4) Python Stream Video Script ====
-START "Stream Video" cmd /k "cd /d %~dp0dockinganddataforwarding && python stream_video.py --remote-ip %REMOTE_IP%"
+REM ==== 4) GStreamer UDP Forwarder (in rov2 env) ====
+START "GStreamer Forward" cmd /k "call conda activate rov2 && gst-launch-1.0 -e -v udpsrc port=5600 caps=""application/x-rtp,media=video,encoding-name=H264,payload=96"" ! udpsink host=%REMOTE_IP% port=5601"
 
 TIMEOUT /T 2 >nul
 
